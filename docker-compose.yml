@@ -1,0 +1,26 @@
+services:
+  gmb-bot:
+    build: .
+    container_name: gmb-bot
+    environment:
+      APP_CRON: ${APP_CRON:-0 * * * *}
+      TIKTOK_PROFILE: ${TIKTOK_PROFILE:-gmbadass}
+      TIKTOK_LOOKBACK_LIMIT: ${TIKTOK_LOOKBACK_LIMIT:-20}
+      TIKTOK_STORAGE_STATE_PATH: ${TIKTOK_STORAGE_STATE_PATH:-}
+      TIKTOK_SESSIONID: ${TIKTOK_SESSIONID:-}
+      MATCH_SUBSTRING: ${MATCH_SUBSTRING:-good morning}
+      STATE_FILE_PATH: /data/state.json
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      TELEGRAM_USERNAME: ${TELEGRAM_USERNAME:-}
+      TELEGRAM_PARSE_MODE: ${TELEGRAM_PARSE_MODE:-}
+      PLAYWRIGHT_HEADLESS: ${PLAYWRIGHT_HEADLESS:-true}
+      SEND_MODE: ${SEND_MODE:-video_with_link_fallback}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      ONE_SHOT: ${ONE_SHOT:-false}
+    volumes:
+      - gmb_data:/data
+    restart: unless-stopped
+
+volumes:
+  gmb_data:

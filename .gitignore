@@ -1,0 +1,6 @@
+/DATA/
+.env
+node_modules/
+coverage.out
+bin/
+gmb_data
