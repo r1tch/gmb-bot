@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -35,56 +35,29 @@ func NewBotAPIClient(token string) *BotAPIClient {
 	}
 }
 
-func (c *BotAPIClient) SendVideoOrFallback(ctx context.Context, req SendRequest, video io.Reader, contentType string) (SendResult, error) {
-	chatID := resolveTarget(req.ChatID, req.Username)
+func (c *BotAPIClient) SendVideo(ctx context.Context, req SendRequest, video io.Reader, _ string) (SendResult, error) {
+	chatID := strings.TrimSpace(req.ChatID)
 	if chatID == "" {
 		return SendResult{}, errs.Wrap(errs.KindConfig, "resolve-chat-target", fmt.Errorf("no chat target configured"))
 	}
-
-	if video != nil {
-		if result, err := c.sendVideo(ctx, chatID, req.Caption, req.ParseMode, video, contentType); err == nil {
-			result.Mode = "video"
-			return result, nil
-		}
+	if video == nil {
+		return SendResult{}, errs.Wrap(errs.KindConfig, "send-video", fmt.Errorf("nil video stream"))
 	}
 
-	result, err := c.sendMessage(ctx, chatID, req.VideoURL, req.ParseMode)
-	if err != nil {
-		return SendResult{}, err
-	}
-	result.Mode = "link"
-	return result, nil
-}
-
-func resolveTarget(chatID, username string) string {
-	if strings.TrimSpace(chatID) != "" {
-		return strings.TrimSpace(chatID)
-	}
-	u := strings.TrimSpace(username)
-	if u == "" {
-		return ""
-	}
-	if strings.HasPrefix(u, "@") {
-		return u
-	}
-	return "@" + u
-}
-
-func (c *BotAPIClient) sendVideo(ctx context.Context, chatID, caption, parseMode string, video io.Reader, _ string) (SendResult, error) {
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
 
 	if err := mw.WriteField("chat_id", chatID); err != nil {
 		return SendResult{}, errs.Wrap(errs.KindTransport, "send-video-chat-field", err)
 	}
-	if caption != "" {
-		_ = mw.WriteField("caption", caption)
+	if req.Caption != "" {
+		_ = mw.WriteField("caption", req.Caption)
 	}
-	if parseMode != "" {
-		_ = mw.WriteField("parse_mode", parseMode)
+	if req.ParseMode != "" {
+		_ = mw.WriteField("parse_mode", req.ParseMode)
 	}
 
-	fw, err := mw.CreateFormFile("video", "good-morning.mp4")
+	fw, err := mw.CreateFormFile("video", "video.mp4")
 	if err != nil {
 		return SendResult{}, errs.Wrap(errs.KindTransport, "send-video-formfile", err)
 	}
@@ -113,39 +86,7 @@ func (c *BotAPIClient) sendVideo(ctx context.Context, chatID, caption, parseMode
 		return SendResult{}, errs.Wrap(errs.KindTransport, "decode-send-video-response", err)
 	}
 	if !payload.OK {
-		return SendResult{}, errs.Wrap(errs.KindTransport, "send-video-api", fmt.Errorf(payload.Description))
-	}
-
-	return SendResult{MessageID: payload.Result.MessageID}, nil
-}
-
-func (c *BotAPIClient) sendMessage(ctx context.Context, chatID, text, parseMode string) (SendResult, error) {
-	v := url.Values{}
-	v.Set("chat_id", chatID)
-	v.Set("text", text)
-	if parseMode != "" {
-		v.Set("parse_mode", parseMode)
-	}
-
-	endpoint := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", c.Token)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(v.Encode()))
-	if err != nil {
-		return SendResult{}, errs.Wrap(errs.KindTransport, "build-send-message-request", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	resp, err := c.HTTPClient.Do(httpReq)
-	if err != nil {
-		return SendResult{}, errs.Wrap(errs.KindTransient, "send-message-request", err)
-	}
-	defer resp.Body.Close()
-
-	var payload apiResponse
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return SendResult{}, errs.Wrap(errs.KindTransport, "decode-send-message-response", err)
-	}
-	if !payload.OK {
-		return SendResult{}, errs.Wrap(errs.KindTransport, "send-message-api", fmt.Errorf(payload.Description))
+		return SendResult{}, errs.Wrap(errs.KindTransport, "send-video-api", errors.New(payload.Description))
 	}
 
 	return SendResult{MessageID: payload.Result.MessageID}, nil

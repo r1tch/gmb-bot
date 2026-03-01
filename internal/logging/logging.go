@@ -19,5 +19,5 @@ func New(level string) *slog.Logger {
 		l.Set(slog.LevelInfo)
 	}
 
-	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: l}))
+	return slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: l}))
 }

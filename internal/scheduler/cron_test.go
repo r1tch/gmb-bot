@@ -2,6 +2,8 @@ package scheduler
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"testing"
 	"time"
 )
@@ -11,7 +13,8 @@ func TestRunEvery(t *testing.T) {
 	defer cancel()
 
 	count := 0
-	err := Run(ctx, "@every 10ms", func(context.Context) error {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	err := Run(ctx, logger, "@every 10ms", func(context.Context) error {
 		count++
 		if count >= 2 {
 			cancel()

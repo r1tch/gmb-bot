@@ -4,132 +4,112 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"gmb/internal/config"
+	"gmb/internal/instagram"
 	"gmb/internal/state"
 	"gmb/internal/telegram"
-	"gmb/internal/tiktok"
 )
 
 type fakeStore struct {
-	lastSent string
-	setCalls int
+	sent map[string]struct{}
 }
 
-func (f *fakeStore) GetLastSentID(context.Context) (string, error) { return f.lastSent, nil }
-func (f *fakeStore) SetLastSentID(_ context.Context, id string) error {
-	f.lastSent = id
-	f.setCalls++
+func (f *fakeStore) ListSentIDs(context.Context) (map[string]struct{}, error) {
+	out := map[string]struct{}{}
+	for k := range f.sent {
+		out[k] = struct{}{}
+	}
+	return out, nil
+}
+func (f *fakeStore) AppendSentID(_ context.Context, id string) error {
+	if f.sent == nil {
+		f.sent = map[string]struct{}{}
+	}
+	f.sent[id] = struct{}{}
+	return nil
+}
+func (f *fakeStore) ResetSent(context.Context) error {
+	f.sent = map[string]struct{}{}
 	return nil
 }
 
-type fakeTikTok struct {
-	videos       []tiktok.Video
-	downloadErr  error
-	downloadBody io.ReadCloser
-}
+type fakeInstagram struct{ posts []instagram.Post }
 
-func (f *fakeTikTok) ListLatestVideos(context.Context, string, int) ([]tiktok.Video, error) {
-	return f.videos, nil
-}
-func (f *fakeTikTok) DownloadVideo(context.Context, tiktok.Video) (io.ReadCloser, string, error) {
-	if f.downloadErr != nil {
-		return nil, "", f.downloadErr
-	}
-	if f.downloadBody != nil {
-		return f.downloadBody, "video/mp4", nil
-	}
-	return io.NopCloser(strings.NewReader("video-bytes")), "video/mp4", nil
+func (f *fakeInstagram) ListProfilePosts(context.Context, string, int) ([]instagram.Post, error) {
+	return f.posts, nil
 }
 
 type fakeNotifier struct {
-	result telegram.SendResult
-	err    error
-	req    telegram.SendRequest
-	gotNil bool
+	called      int
+	lastCaption string
 }
 
-func (f *fakeNotifier) SendVideoOrFallback(_ context.Context, req telegram.SendRequest, video io.Reader, _ string) (telegram.SendResult, error) {
-	f.req = req
-	f.gotNil = video == nil
-	return f.result, f.err
+func (f *fakeNotifier) SendVideo(_ context.Context, req telegram.SendRequest, _ io.Reader, _ string) (telegram.SendResult, error) {
+	f.called++
+	f.lastCaption = req.Caption
+	return telegram.SendResult{MessageID: 1}, nil
 }
 
-func TestSelectNext(t *testing.T) {
-	videos := []tiktok.Video{
-		{ID: "1", Description: "not this"},
-		{ID: "2", Description: "GOOD MORNING people"},
-		{ID: "3", Description: "good morning again"},
-	}
+type fakeRoundTripper struct{}
 
-	got, ok := selectNext(videos, "good morning", "")
-	if !ok || got.ID != "2" {
-		t.Fatalf("expected first match ID 2, got %+v ok=%v", got, ok)
-	}
-
-	got, ok = selectNext(videos, "good morning", "2")
-	if !ok || got.ID != "3" {
-		t.Fatalf("expected next match ID 3, got %+v ok=%v", got, ok)
-	}
+func (f fakeRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: 200,
+		Body:       io.NopCloser(strings.NewReader("mp4-bytes")),
+		Header:     make(http.Header),
+	}, nil
 }
 
-func TestRunOnceUpdatesStateAfterSuccess(t *testing.T) {
-	store := &fakeStore{}
-	tt := &fakeTikTok{videos: []tiktok.Video{{ID: "100", Description: "good morning", URL: "http://x"}}}
-	n := &fakeNotifier{result: telegram.SendResult{Mode: "video", MessageID: 1}}
-
+func TestRunProductionResetsWhenAllSent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gmbadass_20260301-abc.mp4")
+	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st := &fakeStore{sent: map[string]struct{}{"gmbadass_20260301-abc": {}}}
+	n := &fakeNotifier{}
 	s := &Service{
 		Cfg: config.Config{
-			TikTokProfile:     "gmbadass",
-			TikTokLookback:    20,
-			MatchSubstring:    "good morning",
-			TelegramChatID:    "-100",
-			SendMode:          "video_with_link_fallback",
-			TelegramParseMode: "",
+			OneShot:              false,
+			InstagramProfile:     "gmbadass",
+			DescriptionRegex:     "(?i)good",
+			InstagramScanLimit:   10,
+			DownloadDir:          dir,
+			DownloadMaxPerRun:    1,
+			DownloadDelaySeconds: 0,
+			TelegramChatID:       "123",
 		},
-		Store:    store,
-		TikTok:   tt,
-		Notifier: n,
-		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Store:     st,
+		Instagram: &fakeInstagram{},
+		Notifier:  n,
+		Logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Sleep:     func(time.Duration) {},
 	}
-
 	if err := s.RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce: %v", err)
 	}
-	if store.lastSent != "100" || store.setCalls != 1 {
-		t.Fatalf("expected state update to 100 once, got %q calls=%d", store.lastSent, store.setCalls)
+	if n.called != 1 {
+		t.Fatalf("expected send called once, got %d", n.called)
 	}
-	if n.gotNil {
-		t.Fatalf("expected video stream to be provided")
+	if n.lastCaption != "gmbadass - 2026-03-01" {
+		t.Fatalf("unexpected caption: %q", n.lastCaption)
 	}
 }
 
-func TestRunOnceFallsBackWhenDownloadFails(t *testing.T) {
-	store := &fakeStore{}
-	tt := &fakeTikTok{videos: []tiktok.Video{{ID: "100", Description: "good morning", URL: "http://x"}}, downloadErr: io.EOF}
-	n := &fakeNotifier{result: telegram.SendResult{Mode: "link", MessageID: 2}}
-
-	s := &Service{
-		Cfg:      config.Config{TikTokProfile: "gmbadass", TikTokLookback: 20, MatchSubstring: "good morning", TelegramChatID: "-100", SendMode: "video_with_link_fallback"},
-		Store:    store,
-		TikTok:   tt,
-		Notifier: n,
-		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
-	}
-
-	if err := s.RunOnce(context.Background()); err != nil {
-		t.Fatalf("RunOnce: %v", err)
-	}
-	if !n.gotNil {
-		t.Fatalf("expected nil video reader after download failure")
-	}
-	if store.lastSent != "100" {
-		t.Fatalf("expected state update on successful fallback send")
+func TestBuildCaptionFromPath(t *testing.T) {
+	got := buildCaptionFromPath("gmbadass", "/data/video/gmbadass_20260301-abc.mp4")
+	if got != "gmbadass - 2026-03-01" {
+		t.Fatalf("unexpected caption: %q", got)
 	}
 }
 
 var _ state.Store = (*fakeStore)(nil)
-var _ tiktok.Client = (*fakeTikTok)(nil)
+var _ instagram.Client = (*fakeInstagram)(nil)
 var _ telegram.Client = (*fakeNotifier)(nil)

@@ -1,58 +1,75 @@
 package state
 
 import (
+	"bufio"
 	"context"
-	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 
 	errs "gmb/internal/errors"
 )
 
 type Store interface {
-	GetLastSentID(ctx context.Context) (string, error)
-	SetLastSentID(ctx context.Context, id string) error
+	ListSentIDs(ctx context.Context) (map[string]struct{}, error)
+	AppendSentID(ctx context.Context, id string) error
+	ResetSent(ctx context.Context) error
 }
 
 type FileStore struct {
 	Path string
 }
 
-type filePayload struct {
-	LastSentVideoID string `json:"last_sent_video_id"`
-}
-
 func NewFileStore(path string) *FileStore {
 	return &FileStore{Path: path}
 }
 
-func (s *FileStore) GetLastSentID(_ context.Context) (string, error) {
-	b, err := os.ReadFile(s.Path)
-	if errors.Is(err, os.ErrNotExist) {
-		return "", nil
-	}
+func (s *FileStore) ListSentIDs(_ context.Context) (map[string]struct{}, error) {
+	ids := map[string]struct{}{}
+	f, err := os.Open(s.Path)
 	if err != nil {
-		return "", errs.Wrap(errs.KindState, "read-state", err)
+		if os.IsNotExist(err) {
+			return ids, nil
+		}
+		return nil, errs.Wrap(errs.KindState, "read-sent-log", err)
 	}
+	defer f.Close()
 
-	var p filePayload
-	if err := json.Unmarshal(b, &p); err != nil {
-		return "", errs.Wrap(errs.KindState, "parse-state", err)
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		id := strings.TrimSpace(scanner.Text())
+		if id == "" {
+			continue
+		}
+		ids[id] = struct{}{}
 	}
-	return p.LastSentVideoID, nil
+	if err := scanner.Err(); err != nil {
+		return nil, errs.Wrap(errs.KindState, "scan-sent-log", err)
+	}
+	return ids, nil
 }
 
-func (s *FileStore) SetLastSentID(_ context.Context, id string) error {
+func (s *FileStore) AppendSentID(_ context.Context, id string) error {
 	if err := os.MkdirAll(filepath.Dir(s.Path), 0o755); err != nil {
-		return errs.Wrap(errs.KindState, "mkdir-state-dir", err)
+		return errs.Wrap(errs.KindState, "mkdir-sent-dir", err)
 	}
-	b, err := json.MarshalIndent(filePayload{LastSentVideoID: id}, "", "  ")
+	f, err := os.OpenFile(s.Path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
-		return errs.Wrap(errs.KindState, "marshal-state", err)
+		return errs.Wrap(errs.KindState, "open-sent-log", err)
 	}
-	if err := os.WriteFile(s.Path, b, 0o600); err != nil {
-		return errs.Wrap(errs.KindState, "write-state", err)
+	defer f.Close()
+	if _, err := f.WriteString(strings.TrimSpace(id) + "\n"); err != nil {
+		return errs.Wrap(errs.KindState, "append-sent-log", err)
+	}
+	return nil
+}
+
+func (s *FileStore) ResetSent(_ context.Context) error {
+	if err := os.MkdirAll(filepath.Dir(s.Path), 0o755); err != nil {
+		return errs.Wrap(errs.KindState, "mkdir-sent-dir", err)
+	}
+	if err := os.WriteFile(s.Path, []byte(""), 0o600); err != nil {
+		return errs.Wrap(errs.KindState, "reset-sent-log", err)
 	}
 	return nil
 }

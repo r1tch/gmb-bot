@@ -4,3 +4,6 @@ node_modules/
 coverage.out
 bin/
 gmb_data
+.DS_Store
+.vscode/
+__pycache__

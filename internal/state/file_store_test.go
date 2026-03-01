@@ -7,25 +7,42 @@ import (
 
 func TestFileStoreRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	store := NewFileStore(dir + "/state.json")
+	store := NewFileStore(dir + "/sent.log")
 
-	id, err := store.GetLastSentID(context.Background())
+	ids, err := store.ListSentIDs(context.Background())
 	if err != nil {
-		t.Fatalf("GetLastSentID: %v", err)
+		t.Fatalf("ListSentIDs: %v", err)
 	}
-	if id != "" {
-		t.Fatalf("expected empty initial id, got %q", id)
-	}
-
-	if err := store.SetLastSentID(context.Background(), "12345"); err != nil {
-		t.Fatalf("SetLastSentID: %v", err)
+	if len(ids) != 0 {
+		t.Fatalf("expected empty initial ids, got %d", len(ids))
 	}
 
-	id, err = store.GetLastSentID(context.Background())
+	if err := store.AppendSentID(context.Background(), "abc"); err != nil {
+		t.Fatalf("AppendSentID: %v", err)
+	}
+	if err := store.AppendSentID(context.Background(), "def"); err != nil {
+		t.Fatalf("AppendSentID 2: %v", err)
+	}
+
+	ids, err = store.ListSentIDs(context.Background())
 	if err != nil {
-		t.Fatalf("GetLastSentID 2: %v", err)
+		t.Fatalf("ListSentIDs 2: %v", err)
 	}
-	if id != "12345" {
-		t.Fatalf("expected 12345, got %q", id)
+	if _, ok := ids["abc"]; !ok {
+		t.Fatalf("expected abc")
+	}
+	if _, ok := ids["def"]; !ok {
+		t.Fatalf("expected def")
+	}
+
+	if err := store.ResetSent(context.Background()); err != nil {
+		t.Fatalf("ResetSent: %v", err)
+	}
+	ids, err = store.ListSentIDs(context.Background())
+	if err != nil {
+		t.Fatalf("ListSentIDs 3: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("expected empty after reset, got %d", len(ids))
 	}
 }

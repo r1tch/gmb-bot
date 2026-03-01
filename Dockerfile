@@ -1,18 +1,18 @@
-FROM golang:1.22-bookworm AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS builder
 WORKDIR /src
+ARG TARGETOS
+ARG TARGETARCH
 COPY go.mod ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /out/gmb-bot ./cmd/gmb-bot
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /out/gmb-bot ./cmd/gmb-bot
 
-FROM node:20-bookworm-slim
+FROM python:3.12-slim
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates chromium && rm -rf /var/lib/apt/lists/*
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-COPY package.json ./
-RUN npm install --omit=dev && npx playwright install chromium
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir instaloader
 COPY --from=builder /out/gmb-bot /usr/local/bin/gmb-bot
-COPY . .
-RUN chmod +x scripts/tiktok/fetch_videos.mjs
+COPY scripts/instagram /app/scripts/instagram
+RUN chmod +x scripts/instagram/fetch_posts.py
 VOLUME ["/data"]
 ENTRYPOINT ["/usr/local/bin/gmb-bot"]

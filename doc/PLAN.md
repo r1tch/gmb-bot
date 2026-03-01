@@ -1,137 +1,149 @@
-# Go Container App Plan: TikTok "Good Morning" to Telegram Bot
+# Revised Plan: Single Container Instagram Downloader + Telegram Sender
 
 ## Summary
-Build a containerized Go service that runs hourly, scans the latest configurable N videos from `@gmbadass` (default 20), finds the newest unsent video whose description contains `good morning` (case-insensitive), and sends it through your Telegram bot (`gmb_sender_bot`) to a configured recipient.
+Build one containerized Go application (no docker-compose) that uses Instagram data via Python Instaloader (invoked from Go), stores videos on disk, and sends one random unsent video to Telegram.
 
-Delivery behavior:
-1. Plan A: send video via Telegram `sendVideo`.
-2. Plan B: automatically fallback to sending the TikTok link via `sendMessage` if video delivery fails.
+The same image supports:
+- Production mode: daily scheduled run (default 06:00), downloads next batch, then sends one random unsent video.
+- Dev mode: one-shot run that downloads the first matching video and immediately sends it.
 
-State behavior:
-- Persist `last_sent_video_id` in a mounted JSON file to avoid duplicate sends across restarts.
+## Core Requirements (Locked)
+- Single container for both downloader and sender.
+- Multi-platform image build: `linux/amd64` (NAS) and `linux/arm64` (macOS).
+- No Playwright / Chrome / Chromium / browser automation.
+- Use Python Instaloader from Go via command invocation.
+- Storage path format:
+  - `/data/video/<instagram_profile>_<YYYYMMDD>-<shortcode>.mp4`
+- Polite downloading:
+  - 30-second delay between each downloaded video.
+- Image name/tag to publish:
+  - `rrrrdockerrrr/gmb-bot:latest`
 
-## Architecture and Implementation Details
+## Runtime Modes
 
-### 1) Repository Layout
-- `cmd/gmb-bot/main.go`
-- `internal/config/`
-- `internal/logging/`
-- `internal/tiktok/`
-  - `client.go`
-  - `playwright_client.go`
-- `internal/telegram/`
-  - `client.go`
-  - `botapi_client.go`
-- `internal/state/`
-  - `store.go`
-  - `file_store.go`
-- `internal/scheduler/cron.go`
-- `internal/app/service.go`
-- `internal/errors/`
-- `Dockerfile`, `docker-compose.yml`, `Makefile`, `README.md`
+### 1) Production Mode
+- Schedule: once per day, default at 6:00 AM.
+- Per run behavior:
+  1. List Instagram profile posts.
+  2. Filter for video posts whose description/caption matches configured regex.
+  3. Download next batch of missing videos (with 30s delay between downloads).
+  4. Select one random unsent local video.
+  5. Send to Telegram.
+  6. Track sent videos; if all known videos were sent, reset sent-history and continue cycle.
 
-### 2) Public Interfaces/Types (important)
-- `type TikTokClient interface { ListLatestVideos(ctx context.Context, profile string, limit int) ([]Video, error); DownloadVideo(ctx context.Context, v Video) (io.ReadCloser, string, error) }`
-- `type Notifier interface { SendVideoOrFallback(ctx context.Context, req SendRequest) (SendResult, error) }`
-- `type StateStore interface { GetLastSentID(ctx context.Context) (string, error); SetLastSentID(ctx context.Context, id string) error }`
-- `type Video struct { ID, URL, Description, DownloadURL string; CreatedAt time.Time }`
-- `type SendRequest struct { ChatID string; Username string; Video Video; FallbackText string }`
-- `type SendResult struct { Mode string /* video|link */; MessageID int }`
+### 2) Dev Mode (One-Shot)
+- Run once and exit.
+- Behavior:
+  1. Find first video matching filter regex.
+  2. Download it if missing.
+  3. Send it to Telegram immediately.
 
-### 3) Core Flow
-1. Cron tick (`0 * * * *` by default).
-2. Load config and read `last_sent_video_id`.
-3. Fetch latest videos from TikTok profile using Playwright-based extraction.
-4. Filter by case-insensitive substring `good morning`.
-5. Choose newest matching video not equal to last sent ID.
-6. Resolve target recipient:
-   - prefer `TELEGRAM_CHAT_ID`
-   - fallback to `TELEGRAM_USERNAME` if chat ID absent
-7. Try `sendVideo` with downloaded bytes.
-8. On send failure/unsupported constraints, send TikTok URL text via `sendMessage`.
-9. Update state only after successful video or link delivery.
-10. Log structured run result to stdout.
+## Downloader Design
 
-### 4) Configuration (env vars)
-- `APP_CRON` default `0 * * * *`
-- `TIKTOK_PROFILE` default `gmbadass`
-- `TIKTOK_LOOKBACK_LIMIT` default `20`
-- `MATCH_SUBSTRING` default `good morning`
-- `STATE_FILE_PATH` default `/data/state.json`
+### Source
+- Instagram profile (default: `gmbadass`).
+- Data access via Instaloader CLI/API called from Go (`exec.Command`).
+
+### Filtering
+- Configurable regex against caption/description.
+- Default regex: `(?i)(good ?morning|wake)`.
+
+### Deduplication
+- Before download, infer uniqueness from shortcode and target filename.
+- Skip if target file already exists.
+
+### Filename Convention
+- Final file path:
+  - `/data/video/<profile>_<YYYYMMDD>-<shortcode>.mp4`
+- Date source: post date (UTC normalized in filename generation).
+
+### Download Pacing
+- Sleep 30 seconds after each successful download before processing next candidate.
+
+## Sender Design
+
+### Selection
+- Build candidate list from `/data/video/*.mp4`.
+- Maintain sent-history file (e.g. `/data/state/sent.log`) with stable media IDs derived from filename.
+- Choose random from unsent set.
+- If unsent set is empty, clear/reset history and select again from full set.
+
+### Delivery
+- Send video file via Telegram Bot API (`sendVideo`).
+- Append to sent-history only on successful send.
+
+## Configuration (Environment Variables)
+- `IG_PROFILE` default `gmbadass`
+- `DESCRIPTION_REGEX` default `(?i)(good ?morning|wake)`
+- `DOWNLOAD_DIR` default `/data/video`
+- `SENT_LOG_PATH` default `/data/state/sent.log`
+- `DOWNLOAD_DELAY_SECONDS` default `30`
+- `APP_CRON` default `0 6 * * *`
+- `ONE_SHOT` default `false`
 - `TELEGRAM_BOT_TOKEN` required
-- `TELEGRAM_CHAT_ID` optional (preferred)
-- `TELEGRAM_USERNAME` optional (fallback if no chat ID)
-- `TELEGRAM_PARSE_MODE` optional (`MarkdownV2`/`HTML`/empty)
+- `TELEGRAM_CHAT_ID` required (preferred explicit target)
 - `LOG_LEVEL` default `info`
-- `PLAYWRIGHT_HEADLESS` default `true`
-- `SEND_MODE` default `video_with_link_fallback`
 
-Validation:
-- Require at least one of `TELEGRAM_CHAT_ID` or `TELEGRAM_USERNAME`.
-- If both provided, use chat ID.
+## Make Targets (Required)
+- `make run`
+  - Run local container in production mode via `docker run --rm ...`.
+- `make dev`
+  - One-shot mode: download first regex-matching video and send it.
+- `make test`
+  - Run Go tests.
+- `make build`
+  - Build multi-arch image (`linux/amd64,linux/arm64`).
+- `make push`
+  - Build + push multi-arch image to Docker Hub as `rrrrdockerrrr/gmb-bot:latest`.
 
-### 5) Docker and Runtime
-- Multi-stage build:
-  - compile Go binary
-  - runtime with Chromium/Playwright dependencies
-- Mount volume for `/data` to persist state file.
-- Long-running cron process in container.
-- Optional one-shot mode flag for CI/manual execution (without changing default cron behavior).
+Notes:
+- No docker-compose usage.
+- Local execution should mount `./gmb_data:/data`.
 
-### 6) README Content
-- Bot setup prerequisites (already created bot, token handling).
-- How to obtain `chat_id` from Telegram updates (recommended stable target method).
-- Env var reference and example `.env`.
-- Docker run / compose examples with mounted `/data`.
-- Behavior docs for Plan A vs Plan B fallback.
-- Troubleshooting:
-  - bot not allowed in target chat
-  - invalid chat ID/username
-  - TikTok extraction changes
-  - large video or delivery failures causing link fallback
+## Docker/Image Plan
+- Single Dockerfile including:
+  - Go binary build
+  - Python + Instaloader runtime dependency
+- Multi-arch buildx pipeline for `amd64` + `arm64`.
+- Published image:
+  - `rrrrdockerrrr/gmb-bot:latest`
 
-### 7) Engineering Practices
-- TDD-first for core selection/fallback/state rules.
-- SOLID boundaries with interfaces for TikTok and Telegram adapters.
-- Structured JSON logs to stdout with run ID, selected video ID, send mode, latency, and error class.
-- Typed errors: extraction, transport, config, transient/permanent.
-- Idempotent state updates (never mark sent on failed delivery).
-- Secret-safe logging (never print token).
+## Operational Model
 
-### 8) Test Plan and Acceptance Criteria
+### Local Manual Run
+- `make dev` for one-shot verification.
+- `make run` for production-like scheduled behavior.
 
-#### Unit tests
-- config validation and recipient precedence.
-- description matcher (case-insensitive).
-- selection logic (newest unsent match).
-- fallback logic (`sendVideo` failure => `sendMessage` success).
-- state write semantics (only after successful send).
+### NAS Deployment
+- Pull image `rrrrdockerrrr/gmb-bot:latest`.
+- Configure env vars in NAS container manager.
+- Mount persistent volume to `/data`.
+- Run container continuously (scheduler inside app handles daily 6 AM execution).
 
-#### Integration-style tests (mocked APIs)
-- TikTok list + description mix in latest 20.
-- Telegram video success path.
-- Telegram video failure then link success path.
-- target resolution with chat ID and username fallback.
+## Testing and Acceptance Criteria
 
-#### Container smoke test
-- test mode runs a single cycle, emits expected logs, exits 0 on success path.
+### Tests
+- Regex filter matching logic.
+- Filename generation format and parsing.
+- Dedup skip logic for existing files.
+- Sent-history cycle behavior (no repeat until exhaustion, then reset).
+- Dev one-shot path selects first matching video and sends it.
 
-#### Acceptance criteria
-- Hourly run checks latest N videos.
-- Sends first unsent "Good Morning" video to Telegram.
-- Falls back to link automatically when video send fails.
-- Persists `last_sent_video_id` across restart with mounted volume.
-- README is sufficient for another engineer to configure and run.
+### Acceptance Criteria
+- One container handles download + send.
+- No browser automation dependency in code or image.
+- Videos saved as `/data/video/<profile>_<YYYYMMDD>-<shortcode>.mp4`.
+- Production mode runs daily at 6 AM by default.
+- Dev mode does one-shot download+send of first regex match.
+- Multi-arch image is buildable and pushable to `rrrrdockerrrr/gmb-bot:latest`.
 
-## Assumptions and Defaults Chosen
-- TikTok retrieval uses browser automation (no login).
-- Default schedule remains hourly.
-- Matching uses case-insensitive substring.
-- Telegram bot token is provided via env var.
-- Recipient precedence: `TELEGRAM_CHAT_ID` first, `TELEGRAM_USERNAME` second.
-- Default delivery mode is video with automatic link fallback.
-
-## Current TikTok Method (Step-by-step)
-- Current step: open `https://www.tiktok.com/@gmbadass` and list first ~20 video links in the form `https://www.tiktok.com/@gmbadass/video/<video_id>`.
-- Next step (recorded method): click videos one-by-one, inspect each video description, and find the first description containing `Good Morning`.
-- Download approach to implement next: on matching video page, right-click the playing video and choose `Download video`; this triggers browser download for the media file.
+## Short README Requirements
+README must be concise and include only:
+- Required env vars.
+- Manual local runs (`make dev`, `make run`).
+- Build and push commands (`make build`, `make push`).
+- NAS setup steps:
+  1. pull image,
+  2. mount `/data`,
+  3. set env,
+  4. run container.
