@@ -7,3 +7,4 @@ gmb_data
 .DS_Store
 .vscode/
 __pycache__
+.gocache/

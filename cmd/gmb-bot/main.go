@@ -43,6 +43,11 @@ func main() {
 		"telegram_token_set", cfg.TelegramBotToken != "",
 		"log_level", cfg.LogLevel,
 	)
+	if err := app.ValidateWritablePaths(cfg); err != nil {
+		logger.Error("startup preflight failed", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("startup preflight passed", "download_dir", cfg.DownloadDir, "sent_log_path", cfg.SentLogPath)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
