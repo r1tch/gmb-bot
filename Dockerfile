@@ -9,10 +9,13 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /out/gmb-bot ./c
 
 FROM python:3.12-slim
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates gosu && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir instaloader
 COPY --from=builder /out/gmb-bot /usr/local/bin/gmb-bot
 COPY scripts/instagram /app/scripts/instagram
+COPY scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x scripts/instagram/fetch_posts.py
+RUN chmod +x /usr/local/bin/entrypoint.sh
 VOLUME ["/data"]
-ENTRYPOINT ["/usr/local/bin/gmb-bot"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["/usr/local/bin/gmb-bot"]

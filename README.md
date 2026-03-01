@@ -21,6 +21,8 @@ Single-container app that:
 - `SENT_LOG_PATH=/data/state/sent.log`
 - `ONE_SHOT=false`
 - `LOG_LEVEL=info`
+- `USER_ID` (optional, runtime uid override inside container)
+- `GROUP_ID` (optional, runtime gid override; defaults to `USER_ID`)
 
 ## Local manual runs
 - One-shot dev run (download one matching video then random-send from local library) with debug logs:
