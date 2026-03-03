@@ -37,3 +37,7 @@ build:
 
 push:
 	docker buildx build --platform $(PLATFORMS) -t $(IMAGE) --push .
+
+# use below if say, instaloader repo or version has changed (RUN line does not change, docker will cache the install):
+rebuild-push:
+	docker buildx build --no-cache --platform $(PLATFORMS) -t $(IMAGE) --push .
