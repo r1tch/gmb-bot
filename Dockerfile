@@ -10,7 +10,8 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /out/gmb-bot ./c
 FROM python:3.12-slim
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates gosu && rm -rf /var/lib/apt/lists/*
-RUN pip install --no-cache-dir instaloader
+# patched version for http2:
+RUN pip install --no-cache-dir git+https://github.com/r1tch/instaloader.git@using_httpx_for_http2
 COPY --from=builder /out/gmb-bot /usr/local/bin/gmb-bot
 COPY scripts/instagram /app/scripts/instagram
 COPY scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
